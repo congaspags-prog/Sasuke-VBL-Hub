@@ -549,7 +549,12 @@ local function tryAutoDefense(spot, landingTime, velocity)
     lastDefenseTick = now
     lastDefenseBall = trackedBall
     lastDefenseSpot = spot
-    local didTrigger = action == "MERGULHO" and tapDive() or tapReceive()
+    local didTrigger
+    if action == "MERGULHO" then
+        didTrigger = tapDive()
+    else
+        didTrigger = tapReceive()
+    end
     lastDefenseAction = didTrigger and (action .. " ENVIADA") or "COMANDO NAO SUPORTADO"
 end
 
