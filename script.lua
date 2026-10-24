@@ -1,5 +1,5 @@
 -- SASUKE VBL | Luau / Delta Executor
--- Hitbox auxiliar local + previsao aproximada de queda
+-- Versao ESTAVEL: hitbox local + previsao leve e defesa experimental
 -- Nenhuma chamada HTTP ou script externo.
 
 local Players = game:GetService("Players")
@@ -25,8 +25,9 @@ local OFF = Color3.fromRGB(79, 71, 98)
 -- Configuracoes carregadas automaticamente antes de desenhar a interface.
 local settingsPath = "SasukeVBL_Config.json"
 local canSave = type(writefile) == "function" and type(readfile) == "function"
-local hitboxOn, predictOn, pathOn, fluidMode = false, true, true, false
-local autoDefenseOn, autoDiveOn = false, true
+local hitboxOn, predictOn, pathOn, fluidMode = false, true, true, true
+-- A defesa automatica NAO inicia sozinha. Simular entradas pode travar executores mobile.
+local autoDefenseOn, autoDiveOn = false, false
 local hitboxDiameter = 10 -- studs; 4 a 20
 local minimized = false
 local running = true
@@ -47,7 +48,7 @@ local function loadSettings()
     if type(data.prediction) == "boolean" then predictOn = data.prediction end
     if type(data.line) == "boolean" then pathOn = data.line end
     if type(data.fluid) == "boolean" then fluidMode = data.fluid end
-    if type(data.autoDefense) == "boolean" then autoDefenseOn = data.autoDefense end
+    -- Por seguranca, nao restaurar autoDefenseOn=true entre sessoes.
     if type(data.autoDive) == "boolean" then autoDiveOn = data.autoDive end
     if type(data.minimized) == "boolean" then minimized = data.minimized end
     if type(data.size) == "number" and data.size == data.size then
@@ -55,6 +56,8 @@ local function loadSettings()
     end
 end
 loadSettings()
+-- Sempre comeca no modo leve, mesmo que o ultimo uso estivesse desativado.
+fluidMode = true
 
 local function saveSettings()
     if not canSave then
@@ -177,7 +180,7 @@ new("TextLabel", header, {
 })
 new("TextLabel", header, {
     Size = UDim2.fromOffset(175, 15), Position = UDim2.fromOffset(45, 26),
-    BackgroundTransparency = 1, Text = "RINNEGAN  •  V2.1",
+    BackgroundTransparency = 1, Text = "RINNEGAN  •  V2.2 ESTAVEL",
     Font = Enum.Font.Gotham, TextSize = 10, TextColor3 = MUTED,
     TextXAlignment = Enum.TextXAlignment.Left
 })
@@ -272,7 +275,7 @@ autoSaveLabel = new("TextLabel", content, {
 })
 new("TextLabel", content, {
     Position = UDim2.fromOffset(13, 381), Size = UDim2.fromOffset(278, 14),
-    BackgroundTransparency = 1, Text = "Sasuke • v2.1 • defesa automatica experimental",
+    BackgroundTransparency = 1, Text = "v2.2 ESTAVEL • auto defesa inicia OFF",
     TextColor3 = MUTED, TextSize = 9, Font = Enum.Font.Gotham,
     TextXAlignment = Enum.TextXAlignment.Center
 })
@@ -357,11 +360,12 @@ local function ensureHitbox()
         hitboxPart = new("Part", nil, {
             Name = "SasukeHitboxProxy", Shape = Enum.PartType.Ball,
             Anchored = true, CanCollide = false, CanTouch = false,
-            CanQuery = true, CastShadow = false,
+            CanQuery = false, CastShadow = false,
             Material = Enum.Material.ForceField,
             Color = PURPLE, Transparency = 0.82
         })
-        hitboxPart.Parent = trackedBall:IsA("Model") and trackedBall or fx
+        -- Fora do modelo da bola para nao interferir nos sistemas do jogo.
+        hitboxPart.Parent = fx
     end
     hitboxPart.Size = Vector3.new(hitboxDiameter, hitboxDiameter, hitboxDiameter)
     hitboxPart.CFrame = trackedRoot.CFrame
@@ -392,8 +396,9 @@ local function prediction(position, velocity)
         return position + velocity * t + acceleration * (0.5 * t * t)
             - Vector3.new(0, radius * 0.75, 0)
     end
-    local horizon = 4.5
-    local steps = fluidMode and 25 or 48
+    -- Reduz raycasts por verificacao (~75% menos em modo fluidez).
+    local horizon = 3.6
+    local steps = fluidMode and 12 or 24
     local previous = start
     for i = 1, steps do
         local nextTime = horizon * i / steps
@@ -457,61 +462,35 @@ local inputOK, virtualInput = pcall(function()
 end)
 if not inputOK then virtualInput = nil end
 
+-- Usamos somente VirtualInputManager; APIs de clique nativas de executores
+-- podem causar falhas fora do controle do pcall em alguns aparelhos.
 local function tapReceive()
-    if type(mouse1click) == "function" then
-        return pcall(mouse1click)
-    end
-    if type(mouse1press) == "function" and type(mouse1release) == "function" then
-        local ok = pcall(mouse1press)
-        if ok then
-            task.delay(0.055, function() pcall(mouse1release) end)
-        end
-        return ok
-    end
-    if virtualInput then
-        local cam = workspace.CurrentCamera
-        local size = cam and cam.ViewportSize or Vector2.new(720, 1280)
-        local x, y = math.floor(size.X * 0.5), math.floor(size.Y * 0.5)
-        local ok = pcall(function()
-            virtualInput:SendMouseButtonEvent(x, y, 0, true, game, 0)
-        end)
-        if ok then
-            task.delay(0.06, function()
-                pcall(function()
-                    virtualInput:SendMouseButtonEvent(x, y, 0, false, game, 0)
-                end)
+    if not virtualInput then return false end
+    local cam = workspace.CurrentCamera
+    local size = cam and cam.ViewportSize or Vector2.new(720, 1280)
+    local x, y = math.floor(size.X * 0.5), math.floor(size.Y * 0.5)
+    return pcall(function()
+        virtualInput:SendMouseButtonEvent(x, y, 0, true, game, 0)
+        task.delay(0.055, function()
+            pcall(function()
+                virtualInput:SendMouseButtonEvent(x, y, 0, false, game, 0)
             end)
-        end
-        return ok
-    end
-    return false
+        end)
+    end)
 end
 
 local function tapDive()
-    if type(keypress) == "function" and type(keyrelease) == "function" then
-        local ok = pcall(function() keypress(0x11) end) -- 0x11: Control
-        if ok then
-            task.delay(0.085, function()
-                pcall(function() keyrelease(0x11) end)
+    if not virtualInput then return false end
+    return pcall(function()
+        virtualInput:SendKeyEvent(true, Enum.KeyCode.LeftControl, false, game)
+        task.delay(0.08, function()
+            pcall(function()
+                virtualInput:SendKeyEvent(false, Enum.KeyCode.LeftControl, false, game)
             end)
-        end
-        return ok
-    end
-    if virtualInput then
-        local ok = pcall(function()
-            virtualInput:SendKeyEvent(true, Enum.KeyCode.LeftControl, false, game)
         end)
-        if ok then
-            task.delay(0.085, function()
-                pcall(function()
-                    virtualInput:SendKeyEvent(false, Enum.KeyCode.LeftControl, false, game)
-                end)
-            end)
-        end
-        return ok
-    end
-    return false
+    end)
 end
+
 
 local function tryAutoDefense(spot, landingTime, velocity)
     if not autoDefenseOn or not spot or not landingTime then return end
@@ -613,12 +592,9 @@ local accumulator = 0
 local ballSearchClock = 99
 bind(RunService.Heartbeat, function(dt)
     if not running then return end
-    if hitboxPart and trackedRoot and trackedRoot.Parent then
-        hitboxPart.CFrame = trackedRoot.CFrame
-    end
-
+    -- Evita atualizar objetos fisicos a cada frame.
     ballSearchClock = ballSearchClock + dt
-    local searchInterval = fluidMode and 0.80 or 0.40
+    local searchInterval = fluidMode and 1.1 or 0.65
     if ballSearchClock >= searchInterval then
         ballSearchClock = 0
         local ball, root = findBall()
@@ -631,7 +607,7 @@ bind(RunService.Heartbeat, function(dt)
     end
 
     accumulator = accumulator + dt
-    local updateInterval = fluidMode and 0.21 or 0.095
+    local updateInterval = fluidMode and 0.28 or 0.17
     if accumulator < updateInterval then return end
     accumulator = 0
 
@@ -661,8 +637,22 @@ bind(RunService.Heartbeat, function(dt)
         end
     end
     lastPosition, lastSampleTime = position, now
-    local spot, landingTime = updatePrediction(position, velocity)
-    if autoDefenseOn then tryAutoDefense(spot, landingTime, velocity) end
+    -- Desativa auto defesa se a parte automatica gerar erro repetidamente.
+    local ok, spot, landingTime = pcall(updatePrediction, position, velocity)
+    if not ok then
+        hidePrediction()
+        status.Text = "ERRO NA PREVISAO • DESATIVE E REATIVE"
+        return
+    end
+    if autoDefenseOn then
+        local success = pcall(tryAutoDefense, spot, landingTime, velocity)
+        if not success then
+            autoDefenseOn = false
+            setDefense(false)
+            lastDefenseAction = "PAUSADA POR ERRO"
+            saveSettings()
+        end
+    end
 end)
 
 local function close()
