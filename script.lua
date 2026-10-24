@@ -26,6 +26,7 @@ local OFF = Color3.fromRGB(79, 71, 98)
 local settingsPath = "SasukeVBL_Config.json"
 local canSave = type(writefile) == "function" and type(readfile) == "function"
 local hitboxOn, predictOn, pathOn, fluidMode = false, true, true, false
+local autoDefenseOn, autoDiveOn = false, true
 local hitboxDiameter = 10 -- studs; 4 a 20
 local minimized = false
 local running = true
@@ -33,6 +34,8 @@ local connections = {}
 local trackedBall, trackedRoot, hitboxPart
 local lastPosition, lastSampleTime
 local autoSaveLabel
+local lastDefenseTick, lastDefenseBall, lastDefenseSpot = -100, nil, nil
+local lastDefenseAction = ""
 
 local function loadSettings()
     if not canSave then return end
@@ -44,6 +47,8 @@ local function loadSettings()
     if type(data.prediction) == "boolean" then predictOn = data.prediction end
     if type(data.line) == "boolean" then pathOn = data.line end
     if type(data.fluid) == "boolean" then fluidMode = data.fluid end
+    if type(data.autoDefense) == "boolean" then autoDefenseOn = data.autoDefense end
+    if type(data.autoDive) == "boolean" then autoDiveOn = data.autoDive end
     if type(data.minimized) == "boolean" then minimized = data.minimized end
     if type(data.size) == "number" and data.size == data.size then
         hitboxDiameter = math.clamp(math.floor(data.size), 4, 20)
@@ -53,7 +58,7 @@ loadSettings()
 
 local function saveSettings()
     if not canSave then
-        if autoSaveLabel then autoSaveLabel.Text = "AUTO SAVE: INDISPONIVEL" end
+        if autoSaveLabel then autoSaveLabel.Text = "CONFIG: SEM ARQUIVOS" end
         return
     end
     local ok = pcall(function()
@@ -62,13 +67,15 @@ local function saveSettings()
             prediction = predictOn,
             line = pathOn,
             fluid = fluidMode,
+            autoDefense = autoDefenseOn,
+            autoDive = autoDiveOn,
             minimized = minimized,
             size = hitboxDiameter
         })
         writefile(settingsPath, content)
     end)
     if autoSaveLabel then
-        autoSaveLabel.Text = ok and "AUTO SAVE: ATIVO" or "AUTO SAVE: FALHOU"
+        autoSaveLabel.Text = ok and "CONFIG: SALVA AUTOMATICAMENTE" or "CONFIG: ERRO AO SALVAR"
     end
 end
 
@@ -140,7 +147,7 @@ local parented = pcall(function() gui.Parent = CoreGui end)
 if not parented then gui.Parent = player:WaitForChild("PlayerGui") end
 
 local main = new("Frame", gui, {
-    Name = "Window", Size = UDim2.fromOffset(304, minimized and 46 or 356),
+    Name = "Window", Size = UDim2.fromOffset(304, minimized and 46 or 454),
     Position = UDim2.new(0.5, -152, 0.40, -178),
     BackgroundColor3 = DARK, ClipsDescendants = true,
     BorderSizePixel = 0, Active = true
@@ -170,7 +177,7 @@ new("TextLabel", header, {
 })
 new("TextLabel", header, {
     Size = UDim2.fromOffset(175, 15), Position = UDim2.fromOffset(45, 26),
-    BackgroundTransparency = 1, Text = "RINNEGAN  •  V2.0",
+    BackgroundTransparency = 1, Text = "RINNEGAN  •  V2.1",
     Font = Enum.Font.Gotham, TextSize = 10, TextColor3 = MUTED,
     TextXAlignment = Enum.TextXAlignment.Left
 })
@@ -249,21 +256,23 @@ local plusBtn = smallButton("+", 237)
 local predictButton, setPredict = switchRow("PREVER QUEDA", 101, predictOn)
 local pathButton, setPath = switchRow("LINHA ATE A QUEDA", 146, pathOn)
 local fluidButton, setFluid = switchRow("MODO FLUIDEZ", 191, fluidMode)
+local defenseButton, setDefense = switchRow("AUTO SALVAR BOLA", 236, autoDefenseOn)
+local diveButton, setDive = switchRow("AUTO MERGULHO", 281, autoDiveOn)
 local status = new("TextLabel", content, {
-    Size = UDim2.fromOffset(278, 26), Position = UDim2.fromOffset(13, 238),
+    Size = UDim2.fromOffset(278, 26), Position = UDim2.fromOffset(13, 328),
     BackgroundColor3 = PANEL, Text = "PROCURANDO BOLA...",
     TextColor3 = MUTED, Font = Enum.Font.GothamMedium, TextSize = 11
 })
 rounded(status, 8)
 autoSaveLabel = new("TextLabel", content, {
-    Position = UDim2.fromOffset(13, 270), Size = UDim2.fromOffset(278, 18),
-    BackgroundTransparency = 1, Text = "AUTO SAVE: VERIFICANDO...",
+    Position = UDim2.fromOffset(13, 360), Size = UDim2.fromOffset(278, 18),
+    BackgroundTransparency = 1, Text = "CONFIG: VERIFICANDO...",
     TextColor3 = PURPLE, TextSize = 10, Font = Enum.Font.GothamMedium,
     TextXAlignment = Enum.TextXAlignment.Center
 })
 new("TextLabel", content, {
-    Position = UDim2.fromOffset(13, 289), Size = UDim2.fromOffset(278, 14),
-    BackgroundTransparency = 1, Text = "Visual local • v2.0 • FPS leve",
+    Position = UDim2.fromOffset(13, 381), Size = UDim2.fromOffset(278, 14),
+    BackgroundTransparency = 1, Text = "Sasuke • v2.1 • defesa automatica experimental",
     TextColor3 = MUTED, TextSize = 9, Font = Enum.Font.Gotham,
     TextXAlignment = Enum.TextXAlignment.Center
 })
@@ -274,7 +283,7 @@ saveSettings()
 bind(minimizeBtn.MouseButton1Click, function()
     minimized = not minimized
     content.Visible = not minimized
-    main.Size = UDim2.fromOffset(304, minimized and 46 or 356)
+    main.Size = UDim2.fromOffset(304, minimized and 46 or 454)
     minimizeBtn.Text = minimized and "+" or "−"
     saveSettings()
 end)
@@ -405,15 +414,20 @@ local function prediction(position, velocity)
     return nil
 end
 
+-- Linha unica: retorna a previsao tambem para a defesa automatica.
 local function updatePrediction(position, velocity)
-    if not predictOn then
+    if not predictOn and not autoDefenseOn then
         hidePrediction()
-        return
+        return nil
     end
     local spot, timeToLand = prediction(position, velocity)
     if not spot then
         hidePrediction()
-        return
+        return nil
+    end
+    if not predictOn then
+        hidePrediction()
+        return spot, timeToLand
     end
 
     landing.Position = spot + Vector3.new(0, 0.12, 0)
@@ -431,6 +445,112 @@ local function updatePrediction(position, velocity)
     else
         landingLine.Transparency = 1
     end
+    return spot, timeToLand
+end
+
+-- Defesa experimental: envia somente controles normais do jogo.
+-- Bump = clique esquerdo, Dive = Ctrl. Nao altera hitbox do servidor.
+-- Alguns executores mobile nao oferecem simulacao de entrada;
+-- nesse caso, a funcao informa que o comando nao foi suportado.
+local inputOK, virtualInput = pcall(function()
+    return game:GetService("VirtualInputManager")
+end)
+if not inputOK then virtualInput = nil end
+
+local function tapReceive()
+    if type(mouse1click) == "function" then
+        return pcall(mouse1click)
+    end
+    if type(mouse1press) == "function" and type(mouse1release) == "function" then
+        local ok = pcall(mouse1press)
+        if ok then
+            task.delay(0.055, function() pcall(mouse1release) end)
+        end
+        return ok
+    end
+    if virtualInput then
+        local cam = workspace.CurrentCamera
+        local size = cam and cam.ViewportSize or Vector2.new(720, 1280)
+        local x, y = math.floor(size.X * 0.5), math.floor(size.Y * 0.5)
+        local ok = pcall(function()
+            virtualInput:SendMouseButtonEvent(x, y, 0, true, game, 0)
+        end)
+        if ok then
+            task.delay(0.06, function()
+                pcall(function()
+                    virtualInput:SendMouseButtonEvent(x, y, 0, false, game, 0)
+                end)
+            end)
+        end
+        return ok
+    end
+    return false
+end
+
+local function tapDive()
+    if type(keypress) == "function" and type(keyrelease) == "function" then
+        local ok = pcall(function() keypress(0x11) end) -- 0x11: Control
+        if ok then
+            task.delay(0.085, function()
+                pcall(function() keyrelease(0x11) end)
+            end)
+        end
+        return ok
+    end
+    if virtualInput then
+        local ok = pcall(function()
+            virtualInput:SendKeyEvent(true, Enum.KeyCode.LeftControl, false, game)
+        end)
+        if ok then
+            task.delay(0.085, function()
+                pcall(function()
+                    virtualInput:SendKeyEvent(false, Enum.KeyCode.LeftControl, false, game)
+                end)
+            end)
+        end
+        return ok
+    end
+    return false
+end
+
+local function tryAutoDefense(spot, landingTime, velocity)
+    if not autoDefenseOn or not spot or not landingTime then return end
+    if velocity.Y >= -0.75 then return end -- somente bola descendo
+    if landingTime > 0.9 or landingTime < 0.06 then return end
+    if UserInputService:GetFocusedTextBox() then return end
+
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not humanoid or humanoid.Health <= 0
+       or humanoid.FloorMaterial == Enum.Material.Air then return end
+
+    local offset = spot - hrp.Position
+    local horizontal = Vector3.new(offset.X, 0, offset.Z).Magnitude
+    if horizontal > 15.5 then return end
+    if (trackedRoot.Position - hrp.Position).Magnitude > 30 then return end
+
+    local action
+    if horizontal <= 7.5 and landingTime <= 0.47 then
+        action = "RECEPCAO"
+    elseif autoDiveOn and horizontal > 7.5 and landingTime <= 0.85
+        and landingTime >= 0.15 then
+        action = "MERGULHO"
+    else
+        return
+    end
+
+    local now = os.clock()
+    if now - lastDefenseTick < (action == "MERGULHO" and 1.45 or 0.95) then return end
+    if lastDefenseBall == trackedBall and lastDefenseSpot
+        and (lastDefenseSpot - spot).Magnitude < 3.5
+        and now - lastDefenseTick < 1.75 then return end
+
+    lastDefenseTick = now
+    lastDefenseBall = trackedBall
+    lastDefenseSpot = spot
+    local didTrigger = action == "MERGULHO" and tapDive() or tapReceive()
+    lastDefenseAction = didTrigger and (action .. " ENVIADA") or "COMANDO NAO SUPORTADO"
 end
 
 bind(hitButton.MouseButton1Click, function()
@@ -466,6 +586,19 @@ end)
 bind(fluidButton.MouseButton1Click, function()
     fluidMode = not fluidMode
     setFluid(fluidMode)
+    saveSettings()
+end)
+bind(defenseButton.MouseButton1Click, function()
+    autoDefenseOn = not autoDefenseOn
+    setDefense(autoDefenseOn)
+    lastDefenseTick = -100
+    lastDefenseSpot = nil
+    lastDefenseAction = ""
+    saveSettings()
+end)
+bind(diveButton.MouseButton1Click, function()
+    autoDiveOn = not autoDiveOn
+    setDive(autoDiveOn)
     saveSettings()
 end)
 
@@ -504,7 +637,9 @@ bind(RunService.Heartbeat, function(dt)
         status.Text = "PROCURANDO BOLA..."
         return
     end
-    status.Text = "BOLA DETECTADA  |  HITBOX: " .. (hitboxOn and "ON" or "OFF")
+    status.Text = autoDefenseOn and
+        ("DEFESA AUTO: " .. (lastDefenseAction ~= "" and lastDefenseAction or "MONITORANDO"))
+        or ("BOLA DETECTADA  |  HITBOX: " .. (hitboxOn and "ON" or "OFF"))
     if hitboxOn then ensureHitbox() end
 
     local position = root.Position
@@ -521,7 +656,8 @@ bind(RunService.Heartbeat, function(dt)
         end
     end
     lastPosition, lastSampleTime = position, now
-    updatePrediction(position, velocity)
+    local spot, landingTime = updatePrediction(position, velocity)
+    if autoDefenseOn then tryAutoDefense(spot, landingTime, velocity) end
 end)
 
 local function close()
