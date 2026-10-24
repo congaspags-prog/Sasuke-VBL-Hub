@@ -7,6 +7,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CollectionService = game:GetService("CollectionService")
 local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 local env = (type(getgenv) == "function" and getgenv()) or _G
@@ -21,12 +22,55 @@ local TEXT = Color3.fromRGB(240, 232, 255)
 local MUTED = Color3.fromRGB(173, 157, 197)
 local OFF = Color3.fromRGB(79, 71, 98)
 
-local hitboxOn, predictOn, pathOn = false, true, true
+-- Configuracoes carregadas automaticamente antes de desenhar a interface.
+local settingsPath = "SasukeVBL_Config.json"
+local canSave = type(writefile) == "function" and type(readfile) == "function"
+local hitboxOn, predictOn, pathOn, fluidMode = false, true, true, false
 local hitboxDiameter = 10 -- studs; 4 a 20
+local minimized = false
 local running = true
 local connections = {}
 local trackedBall, trackedRoot, hitboxPart
 local lastPosition, lastSampleTime
+local autoSaveLabel
+
+local function loadSettings()
+    if not canSave then return end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(settingsPath))
+    end)
+    if not ok or type(data) ~= "table" then return end
+    if type(data.hitbox) == "boolean" then hitboxOn = data.hitbox end
+    if type(data.prediction) == "boolean" then predictOn = data.prediction end
+    if type(data.line) == "boolean" then pathOn = data.line end
+    if type(data.fluid) == "boolean" then fluidMode = data.fluid end
+    if type(data.minimized) == "boolean" then minimized = data.minimized end
+    if type(data.size) == "number" and data.size == data.size then
+        hitboxDiameter = math.clamp(math.floor(data.size), 4, 20)
+    end
+end
+loadSettings()
+
+local function saveSettings()
+    if not canSave then
+        if autoSaveLabel then autoSaveLabel.Text = "AUTO SAVE: INDISPONIVEL" end
+        return
+    end
+    local ok = pcall(function()
+        local content = HttpService:JSONEncode({
+            hitbox = hitboxOn,
+            prediction = predictOn,
+            line = pathOn,
+            fluid = fluidMode,
+            minimized = minimized,
+            size = hitboxDiameter
+        })
+        writefile(settingsPath, content)
+    end)
+    if autoSaveLabel then
+        autoSaveLabel.Text = ok and "AUTO SAVE: ATIVO" or "AUTO SAVE: FALHOU"
+    end
+end
 
 local function new(class, parent, props)
     local obj = Instance.new(class)
@@ -67,21 +111,18 @@ local landingText = new("TextLabel", billboard, {
 })
 rounded(landingText, 8)
 
-local dots = {}
-for i = 1, 12 do
-    dots[i] = new("Part", fx, {
-        Name = "TrajectoryDot" .. i, Shape = Enum.PartType.Ball,
-        Size = Vector3.new(0.37, 0.37, 0.37), Anchored = true,
-        CanCollide = false, CanTouch = false, CanQuery = false,
-        CastShadow = false, Material = Enum.Material.Neon,
-        Color = PURPLE, Transparency = 1
-    })
-end
+-- Uma linha continua, sem particulas pontilhadas.
+local landingLine = new("Part", fx, {
+    Name = "LandingLine", Size = Vector3.new(0.13, 0.13, 1),
+    Anchored = true, CanCollide = false, CanTouch = false,
+    CanQuery = false, CastShadow = false, Material = Enum.Material.Neon,
+    Color = PURPLE, Transparency = 1
+})
 
 local function hidePrediction()
     landing.Transparency = 1
+    landingLine.Transparency = 1
     billboard.Enabled = false
-    for _, dot in ipairs(dots) do dot.Transparency = 1 end
 end
 
 local function removeHitbox()
@@ -99,8 +140,8 @@ local parented = pcall(function() gui.Parent = CoreGui end)
 if not parented then gui.Parent = player:WaitForChild("PlayerGui") end
 
 local main = new("Frame", gui, {
-    Name = "Window", Size = UDim2.fromOffset(304, 300),
-    Position = UDim2.new(0.5, -152, 0.40, -150),
+    Name = "Window", Size = UDim2.fromOffset(304, minimized and 46 or 356),
+    Position = UDim2.new(0.5, -152, 0.40, -178),
     BackgroundColor3 = DARK, ClipsDescendants = true,
     BorderSizePixel = 0, Active = true
 })
@@ -129,7 +170,7 @@ new("TextLabel", header, {
 })
 new("TextLabel", header, {
     Size = UDim2.fromOffset(175, 15), Position = UDim2.fromOffset(45, 26),
-    BackgroundTransparency = 1, Text = "RINNEGAN  •  DELTA",
+    BackgroundTransparency = 1, Text = "RINNEGAN  •  V2.0",
     Font = Enum.Font.Gotham, TextSize = 10, TextColor3 = MUTED,
     TextXAlignment = Enum.TextXAlignment.Left
 })
@@ -191,7 +232,7 @@ new("TextLabel", sizeRow, {
 })
 local sizeText = new("TextLabel", sizeRow, {
     Position = UDim2.fromOffset(170, 0), Size = UDim2.fromOffset(53, 37),
-    BackgroundTransparency = 1, Text = "10", TextColor3 = PURPLE,
+    BackgroundTransparency = 1, Text = tostring(hitboxDiameter), TextColor3 = PURPLE,
     TextSize = 13, Font = Enum.Font.GothamBold
 })
 local function smallButton(symbol, x)
@@ -206,26 +247,36 @@ end
 local minusBtn = smallButton("−", 142)
 local plusBtn = smallButton("+", 237)
 local predictButton, setPredict = switchRow("PREVER QUEDA", 101, predictOn)
-local pathButton, setPath = switchRow("MOSTRAR TRAJETORIA", 146, pathOn)
+local pathButton, setPath = switchRow("LINHA ATE A QUEDA", 146, pathOn)
+local fluidButton, setFluid = switchRow("MODO FLUIDEZ", 191, fluidMode)
 local status = new("TextLabel", content, {
-    Size = UDim2.fromOffset(278, 26), Position = UDim2.fromOffset(13, 193),
+    Size = UDim2.fromOffset(278, 26), Position = UDim2.fromOffset(13, 238),
     BackgroundColor3 = PANEL, Text = "PROCURANDO BOLA...",
     TextColor3 = MUTED, Font = Enum.Font.GothamMedium, TextSize = 11
 })
 rounded(status, 8)
+autoSaveLabel = new("TextLabel", content, {
+    Position = UDim2.fromOffset(13, 270), Size = UDim2.fromOffset(278, 18),
+    BackgroundTransparency = 1, Text = "AUTO SAVE: VERIFICANDO...",
+    TextColor3 = PURPLE, TextSize = 10, Font = Enum.Font.GothamMedium,
+    TextXAlignment = Enum.TextXAlignment.Center
+})
 new("TextLabel", content, {
-    Position = UDim2.fromOffset(15, 220), Size = UDim2.fromOffset(275, 24),
-    BackgroundTransparency = 1, Text = "Assistencia visual local  |  v1.0",
-    TextColor3 = MUTED, TextSize = 10, Font = Enum.Font.Gotham,
+    Position = UDim2.fromOffset(13, 289), Size = UDim2.fromOffset(278, 14),
+    BackgroundTransparency = 1, Text = "Visual local • v2.0 • FPS leve",
+    TextColor3 = MUTED, TextSize = 9, Font = Enum.Font.Gotham,
     TextXAlignment = Enum.TextXAlignment.Center
 })
 
-local minimized = false
+content.Visible = not minimized
+minimizeBtn.Text = minimized and "+" or "−"
+saveSettings()
 bind(minimizeBtn.MouseButton1Click, function()
     minimized = not minimized
     content.Visible = not minimized
-    main.Size = UDim2.fromOffset(304, minimized and 46 or 300)
+    main.Size = UDim2.fromOffset(304, minimized and 46 or 356)
     minimizeBtn.Text = minimized and "+" or "−"
+    saveSettings()
 end)
 
 -- Arrastar pelo topo: mouse e toque (mobile).
@@ -307,10 +358,14 @@ local function ensureHitbox()
     hitboxPart.CFrame = trackedRoot.CFrame
 end
 
--- Calcula a queda aproximada com base na velocidade atual e na gravidade.
--- Colisoes, habilidades especiais e alteracoes posteriores mudam o resultado.
+-- Projeta a gravidade em trechos e encontra a primeira superficie atingida.
+-- Evita dar como local de queda uma parede ou obstaculo vertical.
+-- Habilidades, lag, vento e novas batidas podem mudar a trajetoria real.
 local function prediction(position, velocity)
-    if velocity.Magnitude > 400 then return nil end
+    if velocity.Magnitude > 400 or velocity.Magnitude < 1.5 then return nil end
+    local g = workspace.Gravity
+    if g <= 0 then return nil end
+
     local exclusions = {fx, trackedBall}
     for _, p in ipairs(Players:GetPlayers()) do
         if p.Character then table.insert(exclusions, p.Character) end
@@ -319,33 +374,35 @@ local function prediction(position, velocity)
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.FilterDescendantsInstances = exclusions
     params.IgnoreWater = true
+    params.RespectCanCollide = true
 
-    local floorHit = workspace:Raycast(position + Vector3.new(0, 2, 0),
-        Vector3.new(0, -400, 0), params)
-    if not floorHit then return nil end
-
-    local g = workspace.Gravity
-    if g <= 0 then return nil end
     local radius = trackedRoot and trackedRoot.Size.Y * 0.5 or 1
-    local deltaH = math.max(0, position.Y - floorHit.Position.Y - radius)
-    local duration = (velocity.Y + math.sqrt(velocity.Y * velocity.Y + 2 * g * deltaH)) / g
-    if duration < 0.04 or duration > 4.5 then return nil end
-
+    local start = position - Vector3.new(0, radius * 0.75, 0)
     local acceleration = Vector3.new(0, -g, 0)
     local function point(t)
         return position + velocity * t + acceleration * (0.5 * t * t)
+            - Vector3.new(0, radius * 0.75, 0)
     end
-    local last = position
-    for i = 1, 40 do
-        local t = duration * i / 40
-        local nextPoint = point(t)
-        local obstruction = workspace:Raycast(last, nextPoint - last, params)
-        if obstruction then
-            return obstruction.Position, t, point
+    local horizon = 4.5
+    local steps = fluidMode and 25 or 48
+    local previous = start
+    for i = 1, steps do
+        local nextTime = horizon * i / steps
+        local nextPoint = point(nextTime)
+        local segment = nextPoint - previous
+        if segment.Magnitude > 0.001 then
+            local hit = workspace:Raycast(previous, segment, params)
+            if hit then
+                if hit.Normal.Y < 0.55 then return nil end
+                local fraction = math.clamp(hit.Distance / segment.Magnitude, 0, 1)
+                local exactTime = horizon * (i - 1 + fraction) / steps
+                if exactTime < 0.04 then return nil end
+                return hit.Position, exactTime
+            end
         end
-        last = nextPoint
+        previous = nextPoint
     end
-    return point(duration), duration, point
+    return nil
 end
 
 local function updatePrediction(position, velocity)
@@ -353,23 +410,26 @@ local function updatePrediction(position, velocity)
         hidePrediction()
         return
     end
-    local spot, timeToLand, pointAt = prediction(position, velocity)
+    local spot, timeToLand = prediction(position, velocity)
     if not spot then
         hidePrediction()
         return
     end
+
     landing.Position = spot + Vector3.new(0, 0.12, 0)
-    landing.Transparency = 0.26
-    landingText.Text = ("CAI EM %.1fs"):format(timeToLand)
+    landing.Transparency = fluidMode and 0.42 or 0.26
+    landingText.Text = ("QUEDA EM %.1fs"):format(timeToLand)
     billboard.Enabled = true
 
-    for i, dot in ipairs(dots) do
-        if pathOn then
-            dot.Position = pointAt(timeToLand * i / (#dots + 1))
-            dot.Transparency = 0.2
-        else
-            dot.Transparency = 1
-        end
+    local target = spot + Vector3.new(0, 0.2, 0)
+    local delta = target - position
+    local distance = delta.Magnitude
+    if pathOn and distance > 0.2 then
+        landingLine.Size = Vector3.new(0.15, 0.15, distance)
+        landingLine.CFrame = CFrame.lookAt(position + delta * 0.5, target)
+        landingLine.Transparency = fluidMode and 0.35 or 0.17
+    else
+        landingLine.Transparency = 1
     end
 end
 
@@ -377,48 +437,70 @@ bind(hitButton.MouseButton1Click, function()
     hitboxOn = not hitboxOn
     setHit(hitboxOn)
     if not hitboxOn then removeHitbox() else ensureHitbox() end
+    saveSettings()
 end)
 bind(minusBtn.MouseButton1Click, function()
     hitboxDiameter = math.max(4, hitboxDiameter - 2)
     sizeText.Text = tostring(hitboxDiameter)
     if hitboxPart then ensureHitbox() end
+    saveSettings()
 end)
 bind(plusBtn.MouseButton1Click, function()
     hitboxDiameter = math.min(20, hitboxDiameter + 2)
     sizeText.Text = tostring(hitboxDiameter)
     if hitboxPart then ensureHitbox() end
+    saveSettings()
 end)
 bind(predictButton.MouseButton1Click, function()
     predictOn = not predictOn
     setPredict(predictOn)
     if not predictOn then hidePrediction() end
+    saveSettings()
 end)
 bind(pathButton.MouseButton1Click, function()
     pathOn = not pathOn
     setPath(pathOn)
-    if not pathOn then
-        for _, dot in ipairs(dots) do dot.Transparency = 1 end
-    end
+    if not pathOn then landingLine.Transparency = 1 end
+    saveSettings()
+end)
+bind(fluidButton.MouseButton1Click, function()
+    fluidMode = not fluidMode
+    setFluid(fluidMode)
+    saveSettings()
 end)
 
+-- Atualizacao separada: procurar a bola custa mais que seguir uma ja encontrada.
+-- O modo fluidez reduz raycasts/frequencia sem desativar a linha de queda.
 local accumulator = 0
+local ballSearchClock = 99
 bind(RunService.Heartbeat, function(dt)
     if not running then return end
     if hitboxPart and trackedRoot and trackedRoot.Parent then
         hitboxPart.CFrame = trackedRoot.CFrame
     end
+
+    ballSearchClock = ballSearchClock + dt
+    local searchInterval = fluidMode and 0.80 or 0.40
+    if ballSearchClock >= searchInterval then
+        ballSearchClock = 0
+        local ball, root = findBall()
+        if ball ~= trackedBall or root ~= trackedRoot then
+            removeHitbox()
+            hidePrediction()
+            trackedBall, trackedRoot = ball, root
+            lastPosition, lastSampleTime = nil, nil
+        end
+    end
+
     accumulator = accumulator + dt
-    if accumulator < 0.11 then return end
+    local updateInterval = fluidMode and 0.21 or 0.095
+    if accumulator < updateInterval then return end
     accumulator = 0
 
-    local ball, root = findBall()
-    if ball ~= trackedBall or root ~= trackedRoot then
-        removeHitbox()
+    local root = trackedRoot
+    if not root or not root.Parent then
         hidePrediction()
-        trackedBall, trackedRoot = ball, root
-        lastPosition, lastSampleTime = nil, nil
-    end
-    if not root then
+        removeHitbox()
         status.Text = "PROCURANDO BOLA..."
         return
     end
